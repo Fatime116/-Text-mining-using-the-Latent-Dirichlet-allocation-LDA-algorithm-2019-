@@ -1,0 +1,237 @@
+ ---
+title: "Text mining using the Latent Dirichlet allocation (LDA) algorithm [2019]"
+date: "May 15, 2019"
+---
+
+
+##For my project ,I run the LDA algorithm on 4 different sets of books, which are downloaded from gutenberg package, whose names are  "FROM THE EARTH TO THE MOON" ,"LIFE ON THE MISSISSIPPI" ,"Democracy and Education: An Introduction to the Philosophy of Education"  ,"History of the Decline and Fall of the Roman Empire — Volume 1 ", .
+
+```{r}
+library(gutenbergr)
+library(knitr)
+library(ggplot2)
+library(methods)
+library(scales)
+library(topicmodels)
+library(tidytext)
+library(dplyr)
+library(tidyr)
+```
+
+```{r}
+books_project <- gutenberg_download(c(83,245,852,890), 
+                              meta_fields = "title")
+books_project
+```
+Before pre-processing, I need to divide these into chapters, use tidytext's `unnest_tokens()` to separate them into words, then remove `stop_words` and I'm treating every chapter as a separate "document", each with a name .
+
+After using count()function , I found out that the most common words , for the book "Democracy and Education", are
+still the words ,such as education ,science ,philosophy and experience , and these are the words that are pretty much related to this book .
+
+For the book "Life on the Mississippi" ,the words ,like "river","water" are the most common words since this book is related to Mississippi river .
+
+```{r}
+library(stringr)
+library(tidyverse)
+library(tidytext)
+# divide into documents, each representing one chapter
+by_chapter_project<- books_project %>%
+  group_by(title) %>%
+  mutate(chapter = cumsum(str_detect(text, regex("^chapter ", ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  filter(chapter > 0) %>%
+  unite(document, title, chapter)
+
+# split into words
+by_chapter_word_project <- by_chapter_project %>%
+  unnest_tokens(word, text)
+
+# find document-word counts
+word_counts_project <- by_chapter_word_project %>%
+  anti_join(stop_words) %>%
+  count(document, word, sort = TRUE) %>%
+  ungroup()
+
+word_counts_project
+```
+#### LDA on chapters
+After making data frame `word_counts` in a tidy form, with one-term-per-document-per-row , we still need to cast a one-token-per-row table into a `DocumentTermMatrix` with tidytext's `cast_dtm()`
+
+```{r}
+
+chapters_dtm_project <- word_counts_project %>%
+  cast_dtm(document, word, n)
+
+chapters_dtm_project
+```
+
+I used the `LDA()` function to create a six-topic LDA model because I downloaded four different books so I set k=4 and set a seed to 1234 so that the output of the model is predictable .
+```{r}
+
+chapters_lda_project <- LDA(chapters_dtm_project, k =4, control = list(seed = 1234))
+chapters_lda_project
+```
+#### Word-topic probabilities
+After fitting LDA model , we need to explore and interpreting the model using tidying functions from the tidytext package .This package provides for extracting the per-topic-per-word probabilities, called ("beta"), from the model.
+Now I need to examine the Word-topic probabilities with matirx=beta .
+
+from the below result ,we can see that the term "education" has almost zero probability generated from topic 4 but compare to topic 2 , i think this term most probabily came from topic 2 with the probability of 8.631327e-03.
+
+```{r chapter_topics}
+chapter_topics_project <- tidy(chapters_lda_project, matrix = "beta")
+chapter_topics_project
+```
+
+And then I used  dplyr's `top_n()` to find the top 5 terms within each topic with a ggplot2 visualizaion .
+
+The most common words in topic1 include "river","time","water" ,which suggests it may represent the book *LIFE ON THE MISSISSIPPI*.
+The topic of "social", "education", "experience", and "knowledge" belongs to *"Democracy and Education: An Introduction to the Philosophy of Education"  *.
+And that "roman", "empire", and "emperor" belongs to *History of the Decline and Fall of the Roman Empire — Volume 1*.
+Besides I also think that "moon" and "barbicane" from *FROM THE EARTH TO THE MOON*.
+And i don't see any common words within these 4 topics for the top 5 terms .because I choose quite different 4 books for my project .
+
+```{r top_terms}
+library(ggplot2)
+top_terms_project <- chapter_topics_project %>%
+  group_by(topic) %>%
+  top_n(5, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms_project
+
+
+
+top_terms_project %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+ 
+#### Per-document classification
+we may want to know which topics are associated with each document and we can find this by examining the per-document-per-topic probabilities, ("gamma").
+
+The model estimates that each word in the *Democracy and Education: An Introduction to the Philosophy of Education*  document has only a 0.00000793 probability of coming from topic 1 .
+
+```{r chapters_gamma_raw}
+chapters_gamma_project<- tidy(chapters_lda_project, matrix = "gamma")
+chapters_gamma_project
+```
+
+To examine how well our unsupervised learning did at distingushing the four book ,first we re-seperate document name into title and chapter .
+
+```{r}
+chapters_gamma_project <- chapters_gamma_project %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE)
+
+chapters_gamma_project
+```
+Visualize the per-topic per document probability using  boxplot for each .
+From below boxplot ,I found out that almost all of the chapters from *LIFE ON THE MISSISSIPPI*, *Democracy and Education: An Introduction to the Philosophy of Education*, and *History of the Decline and Fall of the Roman Empire — Volume 1* were uniquely identified as a single topic each.
+
+It does look like some chapters from  "from the earth to the moon" (which should be topic 4) were somewhat associated with other topics.
+
+```{r}
+# reorder titles in order of topic 1, topic 2, etc before plotting
+chapters_gamma_project %>%
+  mutate(title = reorder(title, gamma * topic)) %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ title)
+```
+
+To examine the topic that was most associated with each chapter , I used `top_n()`, which is effectively the "classification" of that chapter.
+
+```{r}
+chapter_classifications_project <- chapters_gamma_project %>%
+  group_by(title, chapter) %>%
+  top_n(1, gamma) %>%
+  ungroup()
+
+chapter_classifications_project
+```
+
+shows the topic for each book .
+
+```{r}
+book_topics_project <- chapter_classifications_project %>%
+  count(title, topic) %>%
+  group_by(title) %>%
+  top_n(1, n) %>%
+  ungroup() %>%
+  transmute(consensus = title, topic)
+book_topics_project 
+
+```
+commpare each concensus topic for each book .
+
+from below result , four chapters from the book *Life on the Mississippi* was misclassified , as LDA described the first one ,which is chapter 60 ,as coming from the *From the Earth to the Moon; and, Round the Moon* which is topic 4 .
+
+Misclassified the second (chapter33) ,the third (chapter33) and the forth (chapter53) from the book*Life on the Mississippi * ,as coming from the *From the Earth to the Moon; and, Round the Moon* which is also topic 4.
+
+```{r}
+
+chapter_classifications_project %>%
+  inner_join(book_topics_project, by = "topic") %>%
+  filter(title != consensus)
+```
+
+#### By word assignments: augment
+We use augment ()function to find which words in each document were assignend to which topic . and this will add a new column: .topic  
+
+```{r}
+assignments_project<- augment(chapters_lda_project , data = chapters_dtm_project)
+assignments_project
+```
+ 
+ combine assignment table with the concensus book title to find which words were incorrectly identified .
+ true book (title column ) and the book assigned is (consensus column) .
+ 
+```{r}
+assignments_project <- assignments_project %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE) %>%
+  inner_join(book_topics_project, by = c(".topic" = "topic"))
+
+assignments_project
+```
+Almost all of the words were correctly identified . 
+```{r}
+assignments_project %>%
+  count(title, consensus, wt = count) %>%
+  group_by(title) %>%
+  mutate(percent = n / sum(n)) %>%
+  ggplot(aes(consensus, title, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "red", label = percent_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = "Book words were assigned to",
+       y = "Book words came from",
+       fill = "% of assignments")
+```
+
+For some of these words, such as "subject" and "mind", were misidentified ,that's because they're more common in *Democracy and Education: An Introduction to the Philosophy of Education *
+
+And somewords like "wood","trees" ,"cock" are also misidentified , they originally should appear in the book *From the Earth to the Moon; and, Round the Moon* , but they are still more common in *Life on the Mississippi* .
+
+
+```{r}
+wrong_words_project <- assignments_project %>%
+  filter(title != consensus)
+
+wrong_words_project
+
+wrong_words_project %>%
+  count(title, consensus, term, wt = count) %>%
+  ungroup() %>%
+  arrange(desc(n))
+```
+
+
+
+
+
+
